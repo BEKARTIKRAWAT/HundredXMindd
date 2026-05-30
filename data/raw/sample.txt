@@ -1,0 +1,5 @@
+﻿# HundredxMind AI Assistant - Sample Knowledge Base
+Artificial Intelligence (AI) is powerful because it can process vast amounts of data quickly and learn from patterns.
+Large Language Models (LLMs) like Llama 3.2 are a type of AI that can understand and generate human-like text.
+Retrieval Augmented Generation (RAG) combines LLMs with external knowledge to provide accurate, up-to-date answers.
+Our assistant uses RAG to answer questions based on your internal documents.
