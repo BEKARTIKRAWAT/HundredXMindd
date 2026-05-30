@@ -43,6 +43,9 @@ async def metrics_middleware(request: Request, call_next):
         ERRORS.labels(method=method, endpoint=endpoint, error_type=type(e).__name__).inc()
         logger.error(f"{method} {endpoint} - Error: {str(e)}")
         raise
+@app.get("/")
+def root():
+    return {"message": "HundredxMind AI Assistant is running. Use POST /ask to ask questions, GET /metrics for Prometheus stats."}
 @app.get("/metrics")
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
@@ -58,10 +61,8 @@ class QueryRequest(BaseModel):
 @limiter.limit("5/minute")
 def ask(request: Request, query: QueryRequest):
     try:
-        # Simple check: retrieve documents
         docs = vectorstore.similarity_search(query.question, k=3)
         if docs:
-            # Use RAG
             qa = RetrievalQA.from_chain_type(
                 llm=llm,
                 chain_type="stuff",
@@ -78,7 +79,6 @@ def ask(request: Request, query: QueryRequest):
                 "sources": list(set(sources))
             }
         else:
-            # No relevant documents – use LLM directly
             answer = llm.invoke(query.question)
             return {
                 "question": query.question,

@@ -1,4 +1,4 @@
-﻿from graph import graph, AgentState
+from graph import graph, AgentState
 def run_with_hitl(question: str):
     config = {"configurable": {"thread_id": "user_1"}}
     initial_state = {
@@ -23,7 +23,7 @@ def run_with_hitl(question: str):
     score = state.values.get("score", 0)
     print(f"\n[EVALUATION] Score: {score}/10")
     print(f"Answer: {draft}")
-    if score >= 7:
+    if score >= 5:
         user_input = input("\nApprove? (yes/y): ").strip().lower()
         if user_input in ["yes", "y"]:
             graph.update_state(config, {"approved": True})
