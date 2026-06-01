@@ -64,3 +64,12 @@ Multi-agent graph (LangGraph):
 MIT © [BEKARTIKRAWAT](https://github.com/BEKARTIKRAWAT)
 ## 🎥 Demo Video
 [Watch demo](https://youtu.be/2ugJJ7xLSS4)
+
+
+## 🚀 Advanced Capabilities
+
+- **Action Agent** – Manage to‑do lists, reminders, and soon emails/calendar.
+- **Real‑time Streaming** – Token‑by‑token responses via `/ask_stream`.
+- **Web Search** – Live answers with DuckDuckGo.
+- **Long‑term Memory** – Session‑based conversation recall.
+- **Multi‑modal** – Vision (image Q&A) + Voice (speech‑to‑text).

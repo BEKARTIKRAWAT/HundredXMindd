@@ -261,3 +261,16 @@ async def stream_llm(question: str):
 @limiter.limit("10/minute")
 async def ask_stream(request: Request, query: QueryRequest):
     return StreamingResponse(stream_llm(query.question), media_type="text/event-stream")
+# ---------- Agent Swarm Endpoint (LangGraph) ----------
+from agents.agent_swarm_langgraph import run_swarm
+class SwarmRequest(BaseModel):
+    task: str
+@app.post("/swarm")
+@limiter.limit("10/minute")
+async def swarm_endpoint(request: Request, swarm_req: SwarmRequest):
+    try:
+        result = run_swarm(swarm_req.task)
+        return {"task": swarm_req.task, "answer": result, "route": "swarm"}
+    except Exception as e:
+        logger.error(f"Swarm error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
