@@ -274,3 +274,37 @@ async def swarm_endpoint(request: Request, swarm_req: SwarmRequest):
     except Exception as e:
         logger.error(f"Swarm error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+# ---------- Hierarchical Swarm Endpoint ----------
+from agents.hierarchical_swarm import run_hierarchical_swarm
+class HierarchicalRequest(BaseModel):
+    objective: str
+@app.post("/hierarchical_swarm")
+@limiter.limit("10/minute")
+async def hierarchical_swarm_endpoint(request: Request, req: HierarchicalRequest):
+    try:
+        result = run_hierarchical_swarm(req.objective)
+        return {"objective": req.objective, "answer": result, "route": "hierarchical_swarm"}
+    except Exception as e:
+        logger.error(f"Hierarchical swarm error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Omni-Modal Endpoint (Text + Image + Voice) ----------
+from fastapi import File, UploadFile, Form
+from omni import omni_process
+class OmniRequest(BaseModel):
+    text: str
+@app.post("/omni")
+@limiter.limit("10/minute")
+async def omni_endpoint(
+    request: Request,
+    text: str = Form(...),
+    image: UploadFile = File(None),
+    audio: UploadFile = File(None)
+):
+    try:
+        image_bytes = await image.read() if image else None
+        audio_bytes = await audio.read() if audio else None
+        result = omni_process(text, image_bytes, audio_bytes)
+        return {"text": text, "answer": result, "route": "omni"}
+    except Exception as e:
+        logger.error(f"Omni error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
