@@ -16,12 +16,8 @@ import base64
 import requests
 import tempfile
 import os
-import uuid
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from faster_whisper import WhisperModel
-from web_search import web_search
-from memory import get_conversation_history, add_to_history
+from backend.web_search import web_search
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("hundredxmind")
@@ -31,7 +27,7 @@ REQUEST_DURATION = Histogram('http_request_duration_seconds', 'HTTP request dura
 ERRORS = Counter('http_errors_total', 'Total HTTP errors', ['method', 'endpoint', 'error_type'])
 # ---------- Rate limiter ----------
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="HundredxMind AI Assistant", version="3.3.0")
+app = FastAPI(title="HundredxMind AI Assistant", version="3.1.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ---------- CORS ----------
@@ -61,7 +57,7 @@ async def metrics_middleware(request: Request, call_next):
 # ---------- Root ----------
 @app.get("/")
 def root():
-    return {"message": "HundredxMind AI Assistant running. Use /ask, /ask_hybrid, /vision, /voice, /metrics"}
+    return {"message": "HundredxMind AI Assistant running. Use /ask, /vision, /voice, /metrics"}
 # ---------- Metrics ----------
 @app.get("/metrics")
 def metrics():
@@ -75,7 +71,6 @@ vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding
 llm = Ollama(model=LLM_MODEL)
 class QueryRequest(BaseModel):
     question: str
-# ---------- Original /ask ----------
 @app.post("/ask")
 @limiter.limit("5/minute")
 def ask(request: Request, query: QueryRequest):
@@ -98,51 +93,7 @@ def ask(request: Request, query: QueryRequest):
     except Exception as e:
         logger.error(f"Error in /ask: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- Hybrid /ask_hybrid (Web Search + Memory) ----------
-@app.post("/ask_hybrid")
-@limiter.limit("5/minute")
-def ask_hybrid(request: Request, query: QueryRequest, session_id: str = None, use_web: bool = False):
-    sid = session_id or str(uuid.uuid4())
-    history = get_conversation_history(sid)
-    context_str = ""
-    for turn in history[-5:]:
-        context_str += f"User: {turn['user']}\nAssistant: {turn['assistant']}\n"
-    full_question = query.question
-    if context_str:
-        full_question = f"Previous conversation:\n{context_str}\nUser: {query.question}\nAssistant:"
-    try:
-        docs = vectorstore.similarity_search(query.question, k=3)
-        question_lower = query.question.lower()
-        needs_web = use_web or any(word in question_lower for word in ["latest", "today", "current", "news", "weather", "recent", "2025", "2026"])
-        if not needs_web and docs:
-            qa = RetrievalQA.from_chain_type(
-                llm=llm,
-                chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-                return_source_documents=True
-            )
-            result = qa.invoke({"query": full_question})
-            answer = result["result"]
-            sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
-            add_to_history(sid, query.question, answer)
-            return {"question": query.question, "answer": answer, "route": "docs", "sources": list(set(sources)), "session_id": sid}
-        else:
-            web_results = web_search(query.question, max_results=3)
-            if web_results:
-                context = "\n".join([f"- {r['title']}: {r['body']} (Source: {r['href']})" for r in web_results])
-                prompt = f"Previous conversation:\n{context_str}\nUser question: {query.question}\nWeb results:\n{context}\nAnswer:"
-                answer = llm.invoke(prompt)
-                sources = [r['href'] for r in web_results]
-                add_to_history(sid, query.question, answer)
-                return {"question": query.question, "answer": answer, "route": "web", "sources": sources, "session_id": sid}
-            else:
-                print("\\n[DEBUG] Prompt for LLM:", full_question, "\\n"); answer = llm.invoke(full_question)
-                add_to_history(sid, query.question, answer)
-                return {"question": query.question, "answer": answer, "route": "llm", "sources": [], "session_id": sid}
-    except Exception as e:
-        logger.error(f"Hybrid error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-# ---------- Vision ----------
+# ---------- Vision endpoint (LLaVA 13B) ----------
 @app.post("/vision")
 @limiter.limit("5/minute")
 async def vision(request: Request, file: UploadFile = File(...), question: str = Form("What is in this image?")):
@@ -159,7 +110,7 @@ async def vision(request: Request, file: UploadFile = File(...), question: str =
     except Exception as e:
         logger.error(f"Vision error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- Voice ----------
+# ---------- Voice endpoint (faster-whisper) ----------
 whisper_model = None
 def get_whisper_model():
     global whisper_model
@@ -185,41 +136,3 @@ async def voice(request: Request, file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-@app.post("/memory_test")
-def memory_test(session_id: str = None):
-    sid = session_id or str(uuid.uuid4())
-    history = get_conversation_history(sid)
-    if not history:
-        return {"session_id": sid, "history": []}
-    last = history[-1]
-    return {"session_id": sid, "last_user": last["user"], "last_assistant": last["assistant"]}
-@app.post("/ask_memory_only")
-@limiter.limit("5/minute")
-def ask_memory_only(request: Request, query: QueryRequest, session_id: str = None):
-    sid = session_id or str(uuid.uuid4())
-    history = get_conversation_history(sid)
-    prompt = ""
-    if history:
-        prompt += "Conversation history:\n"
-        for turn in history[-5:]:
-            prompt += f"User: {turn['user']}\nAssistant: {turn['assistant']}\n"
-        prompt += "\n"
-    prompt += f"User: {query.question}\nAssistant:"
-    answer = llm.invoke(prompt)
-    add_to_history(sid, query.question, answer)
-    return {"question": query.question, "answer": answer, "session_id": sid}
-@app.post("/ask_memory_only")
-@limiter.limit("5/minute")
-def ask_memory_only(request: Request, query: QueryRequest, session_id: str = None):
-    sid = session_id or str(uuid.uuid4())
-    history = get_conversation_history(sid)
-    prompt = ""
-    if history:
-        prompt += "Conversation history:\n"
-        for turn in history[-5:]:
-            prompt += f"User: {turn['user']}\nAssistant: {turn['assistant']}\n"
-        prompt += "\n"
-    prompt += f"User: {query.question}\nAssistant:"
-    answer = llm.invoke(prompt)
-    add_to_history(sid, query.question, answer)
-    return {"question": query.question, "answer": answer, "session_id": sid}
