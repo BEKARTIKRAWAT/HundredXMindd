@@ -184,7 +184,7 @@ async def voice(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 @app.post("/memory_test")
 def memory_test(session_id: str = None):
     sid = session_id or str(uuid.uuid4())
@@ -307,4 +307,18 @@ async def omni_endpoint(
         return {"text": text, "answer": result, "route": "omni"}
     except Exception as e:
         logger.error(f"Omni error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- ReAct Planning Endpoint ----------
+from agents.planning import hierarchical_plan
+class PlanRequest(BaseModel):
+    task: str
+    depth: int = 2
+@app.post("/plan")
+@limiter.limit("10/minute")
+async def plan_endpoint(request: Request, req: PlanRequest):
+    try:
+        result = hierarchical_plan(req.task, req.depth)
+        return {"task": req.task, "plan": result, "route": "react_plan"}
+    except Exception as e:
+        logger.error(f"Planning error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
