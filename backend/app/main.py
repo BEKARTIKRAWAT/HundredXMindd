@@ -77,7 +77,7 @@ class QueryRequest(BaseModel):
     question: str
 # ---------- Original /ask ----------
 @app.post("/ask")
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 def ask(request: Request, query: QueryRequest):
     try:
         docs = vectorstore.similarity_search(query.question, k=3)
@@ -100,7 +100,7 @@ def ask(request: Request, query: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 # ---------- Hybrid /ask_hybrid (Web Search + Memory) ----------
 @app.post("/ask_hybrid")
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 def ask_hybrid(request: Request, query: QueryRequest, session_id: str = None, use_web: bool = False):
     sid = session_id or str(uuid.uuid4())
     history = get_conversation_history(sid)
@@ -144,7 +144,7 @@ def ask_hybrid(request: Request, query: QueryRequest, session_id: str = None, us
         raise HTTPException(status_code=500, detail=str(e))
 # ---------- Vision ----------
 @app.post("/vision")
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 async def vision(request: Request, file: UploadFile = File(...), question: str = Form("What is in this image?")):
     try:
         contents = await file.read()
@@ -167,7 +167,7 @@ def get_whisper_model():
         whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
     return whisper_model
 @app.post("/voice")
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 async def voice(request: Request, file: UploadFile = File(...)):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -194,7 +194,7 @@ def memory_test(session_id: str = None):
     last = history[-1]
     return {"session_id": sid, "last_user": last["user"], "last_assistant": last["assistant"]}
 @app.post("/ask_memory_only")
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 def ask_memory_only(request: Request, query: QueryRequest, session_id: str = None):
     sid = session_id or str(uuid.uuid4())
     history = get_conversation_history(sid)
@@ -209,7 +209,7 @@ def ask_memory_only(request: Request, query: QueryRequest, session_id: str = Non
     add_to_history(sid, query.question, answer)
     return {"question": query.question, "answer": answer, "session_id": sid}
 @app.post("/ask_memory_only")
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 def ask_memory_only(request: Request, query: QueryRequest, session_id: str = None):
     sid = session_id or str(uuid.uuid4())
     history = get_conversation_history(sid)
