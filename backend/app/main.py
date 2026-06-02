@@ -322,3 +322,182 @@ async def plan_endpoint(request: Request, req: PlanRequest):
     except Exception as e:
         logger.error(f"Planning error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+# ---------- Feedback-Enabled Endpoint ----------
+class AskFeedbackRequest(BaseModel):
+    question: str
+    feedback_score: int = None  # 1-5
+@app.post("/ask_feedback")
+@limiter.limit("10/minute")
+def ask_feedback(request: Request, req: AskFeedbackRequest):
+    try:
+        docs = vectorstore.similarity_search(req.question, k=3)
+        if docs:
+            qa = RetrievalQA.from_chain_type(
+                llm=llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+                return_source_documents=True
+            )
+            result = qa.invoke({"query": req.question})
+            answer = result["result"]
+            sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+            route = "docs"
+        else:
+            answer = llm.invoke(req.question)
+            sources = []
+            route = "llm"
+        # Store feedback if score provided
+        if req.feedback_score is not None:
+            conn = sqlite3.connect(DB_FEEDBACK_PATH)
+            conn.execute(
+                "INSERT INTO feedback (question, answer, route, sources, score) VALUES (?, ?, ?, ?, ?)",
+                (req.question, answer, route, json.dumps(sources), req.feedback_score)
+            )
+            conn.commit()
+            conn.close()
+        return {"question": req.question, "answer": answer, "route": route, "sources": list(set(sources))}
+    except Exception as e:
+        logger.error(f"Ask feedback error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+from apscheduler.schedulers.background import BackgroundScheduler
+from self_improve import self_improve_task
+import atexit
+# Start background scheduler for self‑improvement (runs every hour)
+scheduler = BackgroundScheduler()
+scheduler.add_job(self_improve_task, 'interval', hours=1, id='self_improve_job')
+scheduler.start()
+# Shutdown scheduler on exit
+atexit.register(lambda: scheduler.shutdown())
+# Enhanced /ask with self‑improvement prompts
+def load_prompt_overrides():
+    if PROMPT_OVERRIDE_FILE.exists():
+        with open(PROMPT_OVERRIDE_FILE, "r") as f:
+            return f.read()
+    return ""
+@app.post("/ask_advanced")
+@limiter.limit("10/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        docs = vectorstore.similarity_search(query.question, k=3)
+        overrides = load_prompt_overrides()
+        if overrides:
+            extra_instruction = f"\nAdditional guidelines from previous improvements: {overrides}\n"
+        else:
+            extra_instruction = ""
+        if docs:
+            qa = RetrievalQA.from_chain_type(
+                llm=llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+                return_source_documents=True
+            )
+            # Inject extra instruction into the prompt via the QA chain's prompt template
+            # This requires modifying the chain; simpler: replace the llm call with a custom prompt
+            # For brevity, we add the instruction to the question itself
+            modified_question = query.question + extra_instruction
+            result = qa.invoke({"query": modified_question})
+            answer = result["result"]
+            sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+            return {"question": query.question, "answer": answer, "route": "docs", "sources": list(set(sources))}
+        else:
+            modified_question = query.question + extra_instruction
+            answer = llm.invoke(modified_question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+    except Exception as e:
+        logger.error(f"Advanced ask error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Graph-RAG Endpoint ----------
+from graph_rag import query_graph, add_document_entities, G
+@app.post("/graph_query")
+@limiter.limit("10/minute")
+async def graph_query(request: Request, query: QueryRequest):
+    try:
+        answer = query_graph(query.question)
+        return {"question": query.question, "answer": answer, "route": "graph"}
+    except Exception as e:
+        logger.error(f"Graph error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Graph-RAG Endpoint (Neo4j) ----------
+from neo4j_graph import graph
+@app.post("/graph_neo4j")
+@limiter.limit("10/minute")
+async def graph_neo4j(request: Request, query: QueryRequest):
+    try:
+        answer = graph.query(query.question)
+        return {"question": query.question, "answer": answer, "route": "graph_neo4j"}
+    except Exception as e:
+        logger.error(f"Graph error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Neo4j Graph-RAG Endpoint ----------
+from graph_rag_neo4j import graph_neo
+@app.post("/graph_neo")
+@limiter.limit("10/minute")
+async def graph_neo_endpoint(request: Request, query: QueryRequest):
+    try:
+        answer = graph_neo.query(query.question)
+        return {"question": query.question, "answer": answer, "route": "neo4j_graph"}
+    except Exception as e:
+        logger.error(f"Neo4j error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Multi-modal Output Endpoints ----------
+from multimodal_gen import generate_image, generate_speech
+class ImageRequest(BaseModel):
+    prompt: str
+class SpeechRequest(BaseModel):
+    text: str
+@app.post("/generate_image")
+@limiter.limit("5/minute")
+async def generate_image_endpoint(request: Request, req: ImageRequest):
+    try:
+        out_path = generate_image(req.prompt)
+        return {"prompt": req.prompt, "image_path": out_path}
+    except Exception as e:
+        logger.error(f"Image gen error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/generate_speech")
+@limiter.limit("10/minute")
+async def generate_speech_endpoint(request: Request, req: SpeechRequest):
+    try:
+        out_path = generate_speech(req.text)
+        return {"text": req.text, "audio_path": out_path}
+    except Exception as e:
+        logger.error(f"Speech gen error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Code Interpreter Endpoint ----------
+from code_sandbox import run_python_code
+class CodeRequest(BaseModel):
+    code: str
+@app.post("/execute_code")
+@limiter.limit("5/minute")
+async def execute_code_endpoint(request: Request, req: CodeRequest):
+    try:
+        output = run_python_code(req.code)
+        return {"code": req.code, "output": output}
+    except Exception as e:
+        logger.error(f"Code execution error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Real‑time Collaboration (WebSockets) ----------
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+manager = ConnectionManager()
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Broadcast message to all connected clients
+            await manager.broadcast(f"User: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
