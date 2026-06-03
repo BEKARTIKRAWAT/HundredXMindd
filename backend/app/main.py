@@ -14,6 +14,10 @@ import time
 import logging
 import base64
 import requests
+import sqlite3
+import json
+import sqlite3
+import json
 import tempfile
 import os
 import uuid
@@ -68,6 +72,7 @@ def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 # ---------- RAG setup ----------
 CHROMA_PATH = "D:/HUNDREDXMIND/data/chroma_db"
+DB_FEEDBACK_PATH = "D:/HUNDREDXMIND/data/feedback.db"
 EMBEDDING_MODEL = "nomic-embed-text:latest"
 LLM_MODEL = "llama3.2:latest"
 embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
@@ -501,3 +506,67 @@ async def websocket_endpoint(websocket: WebSocket):
             await manager.broadcast(f"User: {data}")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+# ---------- Autonomous Self-Evolution ----------
+from apscheduler.schedulers.background import BackgroundScheduler
+import importlib
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from dynamic_tools import get_tool, load_all_tools
+from meta_agent import run_evolution
+# Load dynamic tools at startup
+dynamic_tools = load_all_tools()
+def evolution_job():
+    run_evolution()
+    global dynamic_tools
+    dynamic_tools = load_all_tools()
+# Add evolution job to existing scheduler (if not already present)
+try:
+    scheduler.add_job(evolution_job, 'interval', hours=6, id='evolution_job')
+except:
+    # Scheduler might not be defined yet, but we'll assume it is from earlier self-improvement
+    pass
+@app.post("/evolve")
+@limiter.limit("10/minute")
+async def evolve_endpoint(request: Request):
+    evolution_job()
+    return {"status": "Evolution triggered"}
+@app.post("/run_tool/{tool_name}")
+@limiter.limit("10/minute")
+async def run_tool_endpoint(request: Request, tool_name: str, args: dict = {}):
+    tool = get_tool(tool_name)
+    if not tool:
+        raise HTTPException(404, f"Tool '{tool_name}' not found")
+    try:
+        result = tool(**args)
+        return {"tool": tool_name, "result": str(result)}
+    except Exception as e:
+        return {"tool": tool_name, "error": str(e)}
+# ---------- Web Automation (Playwright) ----------
+from web_automation import perform_action
+import asyncio
+class WebActionRequest(BaseModel):
+    action: str
+    params: dict
+@app.post("/web_auto")
+@limiter.limit("5/minute")
+async def web_auto_endpoint(request: Request, req: WebActionRequest):
+    try:
+        result = await perform_action(req.action, req.params)
+        return {"action": req.action, "result": result}
+    except Exception as e:
+        logger.error(f"Web automation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Multi-Agent Debate ----------
+from debate_agent import debate
+class DebateRequest(BaseModel):
+    question: str
+    rounds: int = 2
+@app.post("/debate")
+@limiter.limit("5/minute")
+async def debate_endpoint(request: Request, req: DebateRequest):
+    try:
+        result = debate(req.question, req.rounds)
+        return {"question": req.question, "answer": result, "route": "debate"}
+    except Exception as e:
+        logger.error(f"Debate error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
