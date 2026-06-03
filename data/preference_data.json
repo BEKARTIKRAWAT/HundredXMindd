@@ -1,0 +1,17 @@
+﻿[
+    {
+        "prompt": "What is the capital of France?",
+        "chosen": "The capital of France is Paris.",
+        "rejected": "I don't know, maybe London?"
+    },
+    {
+        "prompt": "What is 2+2?",
+        "chosen": "2+2 equals 4.",
+        "rejected": "I'm not sure, perhaps 5?"
+    },
+    {
+        "prompt": "Explain RAG in one sentence.",
+        "chosen": "Retrieval Augmented Generation (RAG) combines an LLM with external knowledge retrieval.",
+        "rejected": "RAG is something about documents."
+    }
+]

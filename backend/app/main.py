@@ -13,6 +13,9 @@ from starlette.responses import Response
 import time
 import logging
 import base64
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
 import requests
 import sqlite3
 import json
@@ -74,7 +77,7 @@ def metrics():
 CHROMA_PATH = "D:/HUNDREDXMIND/data/chroma_db"
 DB_FEEDBACK_PATH = "D:/HUNDREDXMIND/data/feedback.db"
 EMBEDDING_MODEL = "nomic-embed-text:latest"
-LLM_MODEL = "llama3.2:latest"
+LLM_MODEL = "llama3.2:1b"
 embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
 vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
 llm = Ollama(model=LLM_MODEL)
@@ -570,3 +573,74 @@ async def debate_endpoint(request: Request, req: DebateRequest):
     except Exception as e:
         logger.error(f"Debate error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+# ---------- RLHF Fine‑tuned Endpoint ----------
+import sys
+sys.path.append("D:/HUNDREDXMIND/HundredXMindd")
+# Load the fine‑tuned model once at startup
+try:
+    base_model = "unsloth/llama-3.2-1b-Instruct-bnb-4bit"
+    adapter_path = "D:/HUNDREDXMIND/HundredXMindd/dpo_adapter"
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    base = AutoModelForCausalLM.from_pretrained(base_model, dtype=torch.float32, device_map="cpu")
+    ft_model = PeftModel.from_pretrained(base, adapter_path)
+    print("RLHF model loaded successfully")
+except Exception as e:
+    ft_model = None
+    print(f"RLHF model not loaded: {e}")
+@limiter.limit("10/minute")
+async def ask_rlhf(request: Request, query: QueryRequest):
+    if ft_model is None:
+        raise HTTPException(503, "RLHF model not ready. Please check adapter path.")
+    inputs = tokenizer(f"User: {query.question}\nAssistant:", return_tensors="pt")
+    outputs = ft_model.generate(**inputs, max_new_tokens=256)
+    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    answer = answer.split("Assistant:")[-1].strip()
+    return {"question": query.question, "answer": answer, "route": "rlhf"}
+# ---------- RLHF Fine‑tuned Endpoint ----------
+import sys
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+sys.path.append("D:/HUNDREDXMIND/HundredXMindd")
+try:
+    base_model = "unsloth/llama-3.2-1b-Instruct-bnb-4bit"
+    adapter_path = "D:/HUNDREDXMIND/HundredXMindd/dpo_adapter"
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    base = AutoModelForCausalLM.from_pretrained(base_model, dtype=torch.float32, device_map="cpu")
+    ft_model = PeftModel.from_pretrained(base, adapter_path)
+    print("RLHF model loaded successfully")
+except Exception as e:
+    ft_model = None
+    print(f"RLHF model not loaded: {e}")
+@limiter.limit("10/minute")
+async def ask_rlhf(request: Request, query: QueryRequest):
+    if ft_model is None:
+        raise HTTPException(503, "RLHF model not ready. Please check adapter path.")
+    inputs = tokenizer(f"User: {query.question}\nAssistant:", return_tensors="pt")
+    outputs = ft_model.generate(**inputs, max_new_tokens=256)
+    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    answer = answer.split("Assistant:")[-1].strip()
+    return {"question": query.question, "answer": answer, "route": "rlhf"}
+# ---------- RLHF Fine‑tuned Endpoint ----------
+import sys
+sys.path.append("D:/HUNDREDXMIND/HundredXMindd")
+try:
+    base_model = "unsloth/llama-3.2-1b-Instruct-bnb-4bit"
+    adapter_path = "D:/HUNDREDXMIND/HundredXMindd/dpo_adapter"
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    base = AutoModelForCausalLM.from_pretrained(base_model, dtype=torch.float32, device_map="cpu")
+    ft_model = PeftModel.from_pretrained(base, adapter_path)
+    print("RLHF model loaded successfully")
+except Exception as e:
+    ft_model = None
+    print(f"RLHF model not loaded: {e}")
+@app.post("/ask_rlhf")
+@limiter.limit("10/minute")
+async def ask_rlhf(request: Request, query: QueryRequest):
+    if ft_model is None:
+        raise HTTPException(503, "RLHF model not ready. Please check adapter path.")
+    inputs = tokenizer(f"User: {query.question}\nAssistant:", return_tensors="pt")
+    outputs = ft_model.generate(**inputs, max_new_tokens=256)
+    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    answer = answer.split("Assistant:")[-1].strip()
+    return {"question": query.question, "answer": answer, "route": "rlhf"}
