@@ -868,3 +868,142 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# ---------- Multi-model Routing ----------
+from model_router import route_query
+# You can pull additional models if needed (e.g., deepseek-coder, qwen)
+# ollama pull deepseek-coder:6.7b
+# ollama pull qwen:7b
+# Map route to model (use existing models or add new ones)
+model_map = {
+    "code": "llama3.2:latest",      # default, but you can install deepseek-coder
+    "reasoning": "llama3.2:latest", # could use qwen:7b
+    "general": "llama3.2:1b"        # fast
+}
+@app.post("/ask_routed")
+@limiter.limit("20/minute")
+def ask_routed(request: Request, query: QueryRequest):
+    try:
+        route = route_query(query.question)
+        selected_model = model_map.get(route, "llama3.2:1b")
+        # For RAG, we still retrieve documents – but use the selected model
+        docs = vectorstore.similarity_search(query.question, k=3)
+        if docs:
+            qa = RetrievalQA.from_chain_type(
+                llm=Ollama(model=selected_model),
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+                return_source_documents=True
+            )
+            result = qa.invoke({"query": query.question})
+            answer = result["result"]
+            sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+            return {
+                "question": query.question,
+                "answer": answer,
+                "route": route,
+                "model": selected_model,
+                "sources": list(set(sources))
+            }
+        else:
+            llm = Ollama(model=selected_model)
+            answer = llm.invoke(query.question)
+            return {
+                "question": query.question,
+                "answer": answer,
+                "route": route,
+                "model": selected_model,
+                "sources": []
+            }
+    except Exception as e:
+        logger.error(f"Routing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Advanced Agent Swarm ----------
+from agents.advanced_swarm import run_advanced_swarm
+class SwarmRequest(BaseModel):
+    task: str
+@app.post("/advanced_swarm")
+@limiter.limit("10/minute")
+async def advanced_swarm_endpoint(request: Request, req: SwarmRequest):
+    try:
+        result = run_advanced_swarm(req.task)
+        return {"task": req.task, "answer": result, "route": "advanced_swarm"}
+    except Exception as e:
+        logger.error(f"Advanced swarm error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Tool Calling Endpoint ----------
+from tool_caller import call_tool
+class ToolRequest(BaseModel):
+    tool_name: str
+    parameters: dict
+@app.post("/call_tool")
+@limiter.limit("20/minute")
+def call_tool_endpoint(request: Request, req: ToolRequest):
+    try:
+        result = call_tool(req.tool_name, req.parameters)
+        return {"tool": req.tool_name, "parameters": req.parameters, "result": result}
+    except Exception as e:
+        logger.error(f"Tool calling error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Advanced RAG Endpoint (Hybrid + Reranker) ----------
+from pathlib import Path; PROMPT_OVERRIDE_FILE = Path("D:/HUNDREDXMIND/data/prompt_override.txt")
+
+from advanced_rag import hybrid_retrieve
+from langchain_community.llms import Ollama
+from langchain.chains import RetrievalQA
+llm = Ollama(model="llama3.2:1b")
+@app.post("/ask_advanced")
+@limiter.limit("20/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        # Use hybrid retrieval
+        docs = hybrid_retrieve(query.question, k=5)
+        if not docs:
+            answer = llm.invoke(query.question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+        # Build context
+        context = "\n\n".join([doc.page_content for doc in docs])
+        prompt = f"""Answer based on the following context. If the answer is not in the context, say you don't know.
+Context:
+{context}
+Question: {query.question}
+Answer:"""
+        answer = llm.invoke(prompt)
+        sources = list(set([doc.metadata.get("source", "unknown") for doc in docs]))
+        return {"question": query.question, "answer": answer, "route": "advanced_rag", "sources": sources}
+    except Exception as e:
+        logger.error(f"Advanced RAG error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- GraphRAG Endpoints ----------
+from graph_extractor import query_graph, process_document
+class DocumentRequest(BaseModel):
+    text: str
+@app.post("/graph_ingest")
+@limiter.limit("5/minute")
+def graph_ingest(request: Request, doc: DocumentRequest):
+    triples = process_document(doc.text)
+    return {"triples": triples, "nodes": len(G.nodes), "edges": len(G.edges)}
+@app.post("/graph_query")
+@limiter.limit("10/minute")
+def graph_query(request: Request, query: QueryRequest):
+    answer = query_graph(query.question)
+    return {"question": query.question, "answer": answer, "route": "graph"}
+# ---------- Advanced RAG Endpoint ----------
+from advanced_rag import hybrid_retrieve
+from langchain_community.llms import Ollama
+llm_adv = Ollama(model="llama3.2:1b")
+@app.post("/ask_advanced")
+@limiter.limit("20/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        docs = hybrid_retrieve(query.question, k=5)
+        if not docs:
+            answer = llm_adv.invoke(query.question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+        context = "\n\n".join([doc.page_content for doc in docs])
+        prompt = f"Answer based on the context. If not in context, say you don't know.\nContext:\n{context}\nQuestion: {query.question}\nAnswer:"
+        answer = llm_adv.invoke(prompt)
+        sources = list(set([doc.metadata.get("source", "unknown") for doc in docs]))
+        return {"question": query.question, "answer": answer, "route": "advanced_rag", "sources": sources}
+    except Exception as e:
+        logger.error(f"Advanced RAG error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

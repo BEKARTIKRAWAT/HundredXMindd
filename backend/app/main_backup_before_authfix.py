@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
+from fastapi import Depends
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_community.llms import Ollama
@@ -296,7 +297,7 @@ async def hierarchical_swarm_endpoint(request: Request, req: HierarchicalRequest
         logger.error(f"Hierarchical swarm error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 # ---------- Omni-Modal Endpoint (Text + Image + Voice) ----------
-from fastapi import File, UploadFile, Form
+from fastapi import File, UploadFile, Form, Depends
 from omni import omni_process
 class OmniRequest(BaseModel):
     text: str
@@ -485,7 +486,7 @@ async def execute_code_endpoint(request: Request, req: CodeRequest):
         logger.error(f"Code execution error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 # ---------- Real-time Collaboration (WebSockets) ----------
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect, Depends
 import asyncio
 class ConnectionManager:
     def __init__(self):
@@ -645,11 +646,9 @@ async def ask_rlhf(request: Request, query: QueryRequest):
     answer = answer.split("Assistant:")[-1].strip()
     return {"question": query.question, "answer": answer, "route": "rlhf"}
 
-# ==================== AUTHENTICATION ENDPOINTS (NO INDENT ERRORS) ====================
-from auth import *
+from auth import get_password_hash, verify_password, create_access_token, create_refresh_token, get_user_by_username, get_user_by_email, get_current_user, store_refresh_token, revoke_refresh_token, is_refresh_token_valid
 from database import SessionLocal, User
 from pydantic import BaseModel
-import jwt
 class RegisterRequest(BaseModel):
     email: str
     username: str
@@ -657,10 +656,6 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
-class RefreshRequest(BaseModel):
-    refresh_token: str
-class LogoutRequest(BaseModel):
-    refresh_token: str
 @app.post("/auth/register", status_code=201)
 @limiter.limit("5/minute")
 def register(req: RegisterRequest, request: Request):
@@ -676,13 +671,64 @@ def register(req: RegisterRequest, request: Request):
     db.refresh(user)
     db.close()
     return {"message": "User created", "user_id": user.id}
-@app.post("/auth/login")
 @limiter.limit("10/minute")
 def login(req: LoginRequest, request: Request):
     db = SessionLocal()
     user = get_user_by_username(db, req.username)
     if not user or not verify_password(req.password, user.hashed_password):
         raise HTTPException(401, "Invalid credentials")
+    access = create_access_token(data={"sub": user.id})
+    refresh = create_refresh_token(data={"sub": user.id})
+    store_refresh_token(db, user.id, refresh)
+    db.close()
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+@limiter.limit("20/minute")
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    return {"id": current_user.id, "username": current_user.username, "email": current_user.email}
+from fastapi import Depends
+from auth import *
+from database import SessionLocal, User
+from pydantic import BaseModel, EmailStr, field_validator
+import re
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    username: str
+    password: str
+    @field_validator('password')
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one number')
+        return v
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+@app.post("/auth/register", status_code=201)
+@limiter.limit("5/minute")
+def register(req: RegisterRequest, request: Request):
+    db = SessionLocal()
+    if db.query(User).filter(User.username == req.username).first():
+        raise HTTPException(400, "Username already exists")
+    if db.query(User).filter(User.email == req.email).first():
+        raise HTTPException(400, "Email already exists")
+    hashed = get_password_hash(req.password)
+    user = User(email=req.email, username=req.username, hashed_password=hashed)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    return {"message": "User created", "user_id": user.id}
+@app.post("/auth/login")
+@limiter.limit("10/minute")
+def login(req: LoginRequest, request: Request):
+    db = SessionLocal()
+    user = get_user_by_username(db, req.username)
+    if not user or not verify_password(req.password, user.hashed_password):
+        # Deliberately generic error to avoid user enumeration
+        raise HTTPException(401, "Invalid username or password")
     if not user.is_active:
         raise HTTPException(401, "Account disabled")
     access = create_access_token(data={"sub": user.id})
@@ -695,7 +741,7 @@ def login(req: LoginRequest, request: Request):
 def refresh(req: RefreshRequest, request: Request):
     db = SessionLocal()
     if not is_refresh_token_valid(db, req.refresh_token):
-        raise HTTPException(401, "Invalid refresh token")
+        raise HTTPException(401, "Invalid or expired refresh token")
     try:
         payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
@@ -716,155 +762,104 @@ def logout(req: LogoutRequest, request: Request):
 @app.get("/auth/me")
 @limiter.limit("20/minute")
 def get_me(request: Request, current_user: User = Depends(get_current_user)):
-    return {"id": current_user.id, "username": current_user.username, "email": current_user.email}
-
-# Redis caching imports
-from redis_cache import get_cached_response, cache_response
-# ---------- Cached version (Redis) ----------
-@app.post("/ask_cached")
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "is_active": current_user.is_active,
+        "created_at": current_user.created_at.isoformat() if current_user.created_at else None
+    }
+class RefreshRequest(BaseModel):
+    refresh_token: str
+class LogoutRequest(BaseModel):
+    refresh_token: str
+# ==================== AUTHENTICATION ENDPOINTS (FIXED) ====================
+from auth import *
+from database import SessionLocal, User
+from pydantic import BaseModel, EmailStr, field_validator
+import re
+import jwt
+# ---------- Request Models ----------
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    username: str
+    password: str
+    @field_validator('password')
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one number')
+        return v
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+class RefreshRequest(BaseModel):
+    refresh_token: str
+class LogoutRequest(BaseModel):
+    refresh_token: str
+# ---------- Endpoints ----------
+@app.post("/auth/register", status_code=201)
+@limiter.limit("5/minute")
+def register(req: RegisterRequest, request: Request):
+    db = SessionLocal()
+    if db.query(User).filter(User.username == req.username).first():
+        raise HTTPException(400, "Username already exists")
+    if db.query(User).filter(User.email == req.email).first():
+        raise HTTPException(400, "Email already exists")
+    hashed = get_password_hash(req.password)
+    user = User(email=req.email, username=req.username, hashed_password=hashed)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    return {"message": "User created", "user_id": user.id}
+@app.post("/auth/login")
+@limiter.limit("10/minute")
+def login(req: LoginRequest, request: Request):
+    db = SessionLocal()
+    user = get_user_by_username(db, req.username)
+    if not user or not verify_password(req.password, user.hashed_password):
+        raise HTTPException(401, "Invalid username or password")
+    if not user.is_active:
+        raise HTTPException(401, "Account disabled")
+    access = create_access_token(data={"sub": user.id})
+    refresh = create_refresh_token(data={"sub": user.id})
+    store_refresh_token(db, user.id, refresh)
+    db.close()
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+@app.post("/auth/refresh")
+@limiter.limit("10/minute")
+def refresh(req: RefreshRequest, request: Request):
+    db = SessionLocal()
+    if not is_refresh_token_valid(db, req.refresh_token):
+        raise HTTPException(401, "Invalid or expired refresh token")
+    try:
+        payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(401, "Invalid token")
+    except JWTError:
+        raise HTTPException(401, "Invalid token")
+    new_access = create_access_token(data={"sub": user_id})
+    db.close()
+    return {"access_token": new_access, "token_type": "bearer"}
+@app.post("/auth/logout")
+@limiter.limit("10/minute")
+def logout(req: LogoutRequest, request: Request):
+    db = SessionLocal()
+    revoke_refresh_token(db, req.refresh_token)
+    db.close()
+    return {"message": "Logged out"}
+@app.get("/auth/me")
 @limiter.limit("20/minute")
-def ask_cached(request: Request, query: QueryRequest):
-    cached = get_cached_response(query.question)
-    if cached:
-        return {"question": query.question, "answer": cached, "route": "cache"}
-    docs = vectorstore.similarity_search(query.question, k=3)
-    if docs:
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
-        result = qa.invoke({"query": query.question})
-        answer = result["result"]
-        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
-        route = "docs"
-    else:
-        answer = llm.invoke(query.question)
-        sources = []
-        route = "llm"
-    cache_response(query.question, answer)
-    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
-
-# Redis caching imports
-from redis_cache import get_cached_response, cache_response
-# ---------- Cached version (Redis) ----------
-@app.post("/ask_cached")
-@limiter.limit("20/minute")
-def ask_cached(request: Request, query: QueryRequest):
-    cached = get_cached_response(query.question)
-    if cached:
-        return {"question": query.question, "answer": cached, "route": "cache"}
-    docs = vectorstore.similarity_search(query.question, k=3)
-    if docs:
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
-        result = qa.invoke({"query": query.question})
-        answer = result["result"]
-        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
-        route = "docs"
-    else:
-        answer = llm.invoke(query.question)
-        sources = []
-        route = "llm"
-    cache_response(query.question, answer)
-    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
-
-# Redis caching imports
-from redis_cache import get_cached_response, cache_response
-# ---------- Cached version (Redis) ----------
-@app.post("/ask_cached")
-@limiter.limit("20/minute")
-def ask_cached(request: Request, query: QueryRequest):
-    cached = get_cached_response(query.question)
-    if cached:
-        return {"question": query.question, "answer": cached, "route": "cache"}
-    docs = vectorstore.similarity_search(query.question, k=3)
-    if docs:
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
-        result = qa.invoke({"query": query.question})
-        answer = result["result"]
-        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
-        route = "docs"
-    else:
-        answer = llm.invoke(query.question)
-        sources = []
-        route = "llm"
-    cache_response(query.question, answer)
-    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
-import sys
-class SimpleRequest(BaseModel):
-    msg: str
-@app.post("/simple_cache")
-@limiter.limit("20/minute")
-def simple_cache(req: SimpleRequest, request: Request):
-    cached = get_cached_response(req.msg)
-    if cached:
-        return {"source": "cache", "response": cached}
-    fake_response = f"Echo: {req.msg}"
-    cache_response(req.msg, fake_response)
-    return {"source": "llm (now cached)", "response": fake_response}
-# ---------- SIMPLE CACHED TEST ENDPOINT (using diskcache) ----------
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from cache import get_cached_response, cache_response
-class SimpleRequest(BaseModel):
-    msg: str
-@app.post("/simple_cache")
-@limiter.limit("20/minute")
-def simple_cache(req: SimpleRequest, request: Request):
-    cached = get_cached_response(req.msg)
-    if cached:
-        return {"source": "cache", "response": cached}
-    fake_response = f"Echo: {req.msg}"
-    cache_response(req.msg, fake_response)
-    return {"source": "llm (now cached)", "response": fake_response}
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# CORS middleware (allow all origins for development)
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "is_active": current_user.is_active,
+        "created_at": current_user.created_at.isoformat() if current_user.created_at else None
+    }

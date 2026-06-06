@@ -247,7 +247,7 @@ async def action_endpoint(request: Request, action_req: ActionRequest):
     except Exception as e:
         logger.error(f"Action agent error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- Streaming Endpoint (Server‑Sent Events) ----------
+# ---------- Streaming Endpoint (Server-Sent Events) ----------
 from fastapi.responses import StreamingResponse
 import httpx
 async def stream_llm(question: str):
@@ -370,19 +370,18 @@ def ask_feedback(request: Request, req: AskFeedbackRequest):
 from apscheduler.schedulers.background import BackgroundScheduler
 from self_improve import self_improve_task
 import atexit
-# Start background scheduler for self‑improvement (runs every hour)
+# Start background scheduler for self-improvement (runs every hour)
 scheduler = BackgroundScheduler()
 scheduler.add_job(self_improve_task, 'interval', hours=1, id='self_improve_job')
 scheduler.start()
 # Shutdown scheduler on exit
 atexit.register(lambda: scheduler.shutdown())
-# Enhanced /ask with self‑improvement prompts
+# Enhanced /ask with self-improvement prompts
 def load_prompt_overrides():
     if PROMPT_OVERRIDE_FILE.exists():
         with open(PROMPT_OVERRIDE_FILE, "r") as f:
             return f.read()
     return ""
-@app.post("/ask_advanced")
 @limiter.limit("10/minute")
 def ask_advanced(request: Request, query: QueryRequest):
     try:
@@ -484,7 +483,7 @@ async def execute_code_endpoint(request: Request, req: CodeRequest):
     except Exception as e:
         logger.error(f"Code execution error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- Real‑time Collaboration (WebSockets) ----------
+# ---------- Real-time Collaboration (WebSockets) ----------
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 class ConnectionManager:
@@ -573,10 +572,10 @@ async def debate_endpoint(request: Request, req: DebateRequest):
     except Exception as e:
         logger.error(f"Debate error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- RLHF Fine‑tuned Endpoint ----------
+# ---------- RLHF Fine-tuned Endpoint ----------
 import sys
 sys.path.append("D:/HUNDREDXMIND/HundredXMindd")
-# Load the fine‑tuned model once at startup
+# Load the fine-tuned model once at startup
 try:
     base_model = "unsloth/llama-3.2-1b-Instruct-bnb-4bit"
     adapter_path = "D:/HUNDREDXMIND/HundredXMindd/dpo_adapter"
@@ -596,7 +595,7 @@ async def ask_rlhf(request: Request, query: QueryRequest):
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
     answer = answer.split("Assistant:")[-1].strip()
     return {"question": query.question, "answer": answer, "route": "rlhf"}
-# ---------- RLHF Fine‑tuned Endpoint ----------
+# ---------- RLHF Fine-tuned Endpoint ----------
 import sys
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -621,7 +620,7 @@ async def ask_rlhf(request: Request, query: QueryRequest):
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
     answer = answer.split("Assistant:")[-1].strip()
     return {"question": query.question, "answer": answer, "route": "rlhf"}
-# ---------- RLHF Fine‑tuned Endpoint ----------
+# ---------- RLHF Fine-tuned Endpoint ----------
 import sys
 sys.path.append("D:/HUNDREDXMIND/HundredXMindd")
 try:
@@ -644,3 +643,444 @@ async def ask_rlhf(request: Request, query: QueryRequest):
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
     answer = answer.split("Assistant:")[-1].strip()
     return {"question": query.question, "answer": answer, "route": "rlhf"}
+
+# ==================== AUTHENTICATION ENDPOINTS (NO INDENT ERRORS) ====================
+from auth import *
+from database import SessionLocal, User
+from pydantic import BaseModel
+import jwt
+class RegisterRequest(BaseModel):
+    email: str
+    username: str
+    password: str
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+class RefreshRequest(BaseModel):
+    refresh_token: str
+class LogoutRequest(BaseModel):
+    refresh_token: str
+@app.post("/auth/register", status_code=201)
+@limiter.limit("5/minute")
+def register(req: RegisterRequest, request: Request):
+    db = SessionLocal()
+    if db.query(User).filter(User.username == req.username).first():
+        raise HTTPException(400, "Username exists")
+    if db.query(User).filter(User.email == req.email).first():
+        raise HTTPException(400, "Email exists")
+    hashed = get_password_hash(req.password)
+    user = User(email=req.email, username=req.username, hashed_password=hashed)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    return {"message": "User created", "user_id": user.id}
+@app.post("/auth/login")
+@limiter.limit("10/minute")
+def login(req: LoginRequest, request: Request):
+    db = SessionLocal()
+    user = get_user_by_username(db, req.username)
+    if not user or not verify_password(req.password, user.hashed_password):
+        raise HTTPException(401, "Invalid credentials")
+    if not user.is_active:
+        raise HTTPException(401, "Account disabled")
+    access = create_access_token(data={"sub": user.id})
+    refresh = create_refresh_token(data={"sub": user.id})
+    store_refresh_token(db, user.id, refresh)
+    db.close()
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+@app.post("/auth/refresh")
+@limiter.limit("10/minute")
+def refresh(req: RefreshRequest, request: Request):
+    db = SessionLocal()
+    if not is_refresh_token_valid(db, req.refresh_token):
+        raise HTTPException(401, "Invalid refresh token")
+    try:
+        payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(401, "Invalid token")
+    except JWTError:
+        raise HTTPException(401, "Invalid token")
+    new_access = create_access_token(data={"sub": user_id})
+    db.close()
+    return {"access_token": new_access, "token_type": "bearer"}
+@app.post("/auth/logout")
+@limiter.limit("10/minute")
+def logout(req: LogoutRequest, request: Request):
+    db = SessionLocal()
+    revoke_refresh_token(db, req.refresh_token)
+    db.close()
+    return {"message": "Logged out"}
+@app.get("/auth/me")
+@limiter.limit("20/minute")
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    return {"id": current_user.id, "username": current_user.username, "email": current_user.email}
+
+# Redis caching imports
+from redis_cache import get_cached_response, cache_response
+# ---------- Cached version (Redis) ----------
+@app.post("/ask_cached")
+@limiter.limit("20/minute")
+def ask_cached(request: Request, query: QueryRequest):
+    cached = get_cached_response(query.question)
+    if cached:
+        return {"question": query.question, "answer": cached, "route": "cache"}
+    docs = vectorstore.similarity_search(query.question, k=3)
+    if docs:
+        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
+        result = qa.invoke({"query": query.question})
+        answer = result["result"]
+        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+        route = "docs"
+    else:
+        answer = llm.invoke(query.question)
+        sources = []
+        route = "llm"
+    cache_response(query.question, answer)
+    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
+
+# Redis caching imports
+from redis_cache import get_cached_response, cache_response
+# ---------- Cached version (Redis) ----------
+@app.post("/ask_cached")
+@limiter.limit("20/minute")
+def ask_cached(request: Request, query: QueryRequest):
+    cached = get_cached_response(query.question)
+    if cached:
+        return {"question": query.question, "answer": cached, "route": "cache"}
+    docs = vectorstore.similarity_search(query.question, k=3)
+    if docs:
+        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
+        result = qa.invoke({"query": query.question})
+        answer = result["result"]
+        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+        route = "docs"
+    else:
+        answer = llm.invoke(query.question)
+        sources = []
+        route = "llm"
+    cache_response(query.question, answer)
+    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
+
+# Redis caching imports
+from redis_cache import get_cached_response, cache_response
+# ---------- Cached version (Redis) ----------
+@app.post("/ask_cached")
+@limiter.limit("20/minute")
+def ask_cached(request: Request, query: QueryRequest):
+    cached = get_cached_response(query.question)
+    if cached:
+        return {"question": query.question, "answer": cached, "route": "cache"}
+    docs = vectorstore.similarity_search(query.question, k=3)
+    if docs:
+        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
+        result = qa.invoke({"query": query.question})
+        answer = result["result"]
+        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+        route = "docs"
+    else:
+        answer = llm.invoke(query.question)
+        sources = []
+        route = "llm"
+    cache_response(query.question, answer)
+    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
+import sys
+class SimpleRequest(BaseModel):
+    msg: str
+@app.post("/simple_cache")
+@limiter.limit("20/minute")
+def simple_cache(req: SimpleRequest, request: Request):
+    cached = get_cached_response(req.msg)
+    if cached:
+        return {"source": "cache", "response": cached}
+    fake_response = f"Echo: {req.msg}"
+    cache_response(req.msg, fake_response)
+    return {"source": "llm (now cached)", "response": fake_response}
+# ---------- SIMPLE CACHED TEST ENDPOINT (using diskcache) ----------
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from cache import get_cached_response, cache_response
+class SimpleRequest(BaseModel):
+    msg: str
+@app.post("/simple_cache")
+@limiter.limit("20/minute")
+def simple_cache(req: SimpleRequest, request: Request):
+    cached = get_cached_response(req.msg)
+    if cached:
+        return {"source": "cache", "response": cached}
+    fake_response = f"Echo: {req.msg}"
+    cache_response(req.msg, fake_response)
+    return {"source": "llm (now cached)", "response": fake_response}
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# CORS middleware (allow all origins for development)
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# ---------- Multi-model Routing ----------
+from model_router import route_query
+# You can pull additional models if needed (e.g., deepseek-coder, qwen)
+# ollama pull deepseek-coder:6.7b
+# ollama pull qwen:7b
+# Map route to model (use existing models or add new ones)
+model_map = {
+    "code": "llama3.2:latest",      # default, but you can install deepseek-coder
+    "reasoning": "llama3.2:latest", # could use qwen:7b
+    "general": "llama3.2:1b"        # fast
+}
+@app.post("/ask_routed")
+@limiter.limit("20/minute")
+def ask_routed(request: Request, query: QueryRequest):
+    try:
+        route = route_query(query.question)
+        selected_model = model_map.get(route, "llama3.2:1b")
+        # For RAG, we still retrieve documents – but use the selected model
+        docs = vectorstore.similarity_search(query.question, k=3)
+        if docs:
+            qa = RetrievalQA.from_chain_type(
+                llm=Ollama(model=selected_model),
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+                return_source_documents=True
+            )
+            result = qa.invoke({"query": query.question})
+            answer = result["result"]
+            sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+            return {
+                "question": query.question,
+                "answer": answer,
+                "route": route,
+                "model": selected_model,
+                "sources": list(set(sources))
+            }
+        else:
+            llm = Ollama(model=selected_model)
+            answer = llm.invoke(query.question)
+            return {
+                "question": query.question,
+                "answer": answer,
+                "route": route,
+                "model": selected_model,
+                "sources": []
+            }
+    except Exception as e:
+        logger.error(f"Routing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Advanced Agent Swarm ----------
+from agents.advanced_swarm import run_advanced_swarm
+class SwarmRequest(BaseModel):
+    task: str
+@app.post("/advanced_swarm")
+@limiter.limit("10/minute")
+async def advanced_swarm_endpoint(request: Request, req: SwarmRequest):
+    try:
+        result = run_advanced_swarm(req.task)
+        return {"task": req.task, "answer": result, "route": "advanced_swarm"}
+    except Exception as e:
+        logger.error(f"Advanced swarm error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Tool Calling Endpoint ----------
+from tool_caller import call_tool
+class ToolRequest(BaseModel):
+    tool_name: str
+    parameters: dict
+@app.post("/call_tool")
+@limiter.limit("20/minute")
+def call_tool_endpoint(request: Request, req: ToolRequest):
+    try:
+        result = call_tool(req.tool_name, req.parameters)
+        return {"tool": req.tool_name, "parameters": req.parameters, "result": result}
+    except Exception as e:
+        logger.error(f"Tool calling error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Advanced RAG Endpoint (Hybrid + Reranker) ----------
+from pathlib import Path; PROMPT_OVERRIDE_FILE = Path("D:/HUNDREDXMIND/data/prompt_override.txt")
+
+from advanced_rag import hybrid_retrieve
+from langchain_community.llms import Ollama
+from langchain.chains import RetrievalQA
+llm = Ollama(model="llama3.2:1b")
+@limiter.limit("20/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        # Use hybrid retrieval
+        docs = hybrid_retrieve(query.question, k=5)
+        if not docs:
+            answer = llm.invoke(query.question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+        # Build context
+        context = "\n\n".join([doc.page_content for doc in docs])
+        prompt = f"""Answer based on the following context. If the answer is not in the context, say you don't know.
+Context:
+{context}
+Question: {query.question}
+Answer:"""
+        answer = llm.invoke(prompt)
+        sources = list(set([doc.metadata.get("source", "unknown") for doc in docs]))
+        return {"question": query.question, "answer": answer, "route": "advanced_rag", "sources": sources}
+    except Exception as e:
+        logger.error(f"Advanced RAG error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- GraphRAG Endpoints ----------
+from graph_extractor import query_graph, process_document
+class DocumentRequest(BaseModel):
+    text: str
+@app.post("/graph_ingest")
+@limiter.limit("5/minute")
+def graph_ingest(request: Request, doc: DocumentRequest):
+    triples = process_document(doc.text)
+    return {"triples": triples, "nodes": len(G.nodes), "edges": len(G.edges)}
+@app.post("/graph_query")
+@limiter.limit("10/minute")
+def graph_query(request: Request, query: QueryRequest):
+    answer = query_graph(query.question)
+    return {"question": query.question, "answer": answer, "route": "graph"}
+# ---------- Advanced RAG Endpoint ----------
+from advanced_rag import hybrid_retrieve
+from langchain_community.llms import Ollama
+llm_adv = Ollama(model="llama3.2:1b")
+@limiter.limit("20/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        docs = hybrid_retrieve(query.question, k=5)
+        if not docs:
+            answer = llm_adv.invoke(query.question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+        context = "\n\n".join([doc.page_content for doc in docs])
+        prompt = f"Answer based on the context. If not in context, say you don't know.\nContext:\n{context}\nQuestion: {query.question}\nAnswer:"
+        answer = llm_adv.invoke(prompt)
+        sources = list(set([doc.metadata.get("source", "unknown") for doc in docs]))
+        return {"question": query.question, "answer": answer, "route": "advanced_rag", "sources": sources}
+    except Exception as e:
+        logger.error(f"Advanced RAG error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Advanced RAG Endpoint ----------
+from advanced_rag import hybrid_retrieve
+from langchain_community.llms import Ollama
+llm_adv = Ollama(model="llama3.2:1b")
+@limiter.limit("20/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        docs = hybrid_retrieve(query.question, k=5)
+        if not docs:
+            answer = llm_adv.invoke(query.question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+        context = "\n\n".join([doc.page_content for doc in docs])
+        prompt = f"Answer based on the context. If not in context, say you don't know.\nContext:\n{context}\nQuestion: {query.question}\nAnswer:"
+        answer = llm_adv.invoke(prompt)
+        sources = list(set([doc.metadata.get("source", "unknown") for doc in docs]))
+        return {"question": query.question, "answer": answer, "route": "advanced_rag", "sources": sources}
+    except Exception as e:
+        logger.error(f"Advanced RAG error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Advanced RAG Endpoint (add at the very end) ----------
+from advanced_rag import hybrid_retrieve
+from langchain_community.llms import Ollama
+llm_adv = Ollama(model="llama3.2:1b")
+@limiter.limit("20/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        docs = hybrid_retrieve(query.question, k=5)
+        if not docs:
+            answer = llm_adv.invoke(query.question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+        context = "\n\n".join([doc.page_content for doc in docs])
+        prompt = f"Answer based on the context. If not in context, say you don't know.\nContext:\n{context}\nQuestion: {query.question}\nAnswer:"
+        answer = llm_adv.invoke(prompt)
+        sources = list(set([doc.metadata.get("source", "unknown") for doc in docs]))
+        return {"question": query.question, "answer": answer, "route": "advanced_rag", "sources": sources}
+    except Exception as e:
+        logger.error(f"Advanced RAG error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Advanced RAG Endpoint (Hybrid Search) ----------
+from advanced_rag import hybrid_retrieve
+from langchain_community.llms import Ollama
+llm_adv = Ollama(model="llama3.2:1b")
+@app.post("/ask_advanced")
+@limiter.limit("20/minute")
+def ask_advanced(request: Request, query: QueryRequest):
+    try:
+        docs = hybrid_retrieve(query.question, k=5)
+        if not docs:
+            answer = llm_adv.invoke(query.question)
+            return {"question": query.question, "answer": answer, "route": "llm", "sources": []}
+        context = "\n\n".join([doc.page_content for doc in docs])
+        prompt = f"Answer based on the context. If not in context, say you don't know.\nContext:\n{context}\nQuestion: {query.question}\nAnswer:"
+        answer = llm_adv.invoke(prompt)
+        sources = list(set([doc.metadata.get("source", "unknown") for doc in docs]))
+        return {"question": query.question, "answer": answer, "route": "advanced_rag", "sources": sources}
+    except Exception as e:
+        logger.error(f"Advanced RAG error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Real‑Time Voice Assistant ----------
+from voice_live import listen_once, speak
+@app.post("/voice_live")
+@limiter.limit("5/minute")
+async def voice_live(request: Request):
+    try:
+        transcribed = listen_once()
+        if not transcribed:
+            return {"error": "No speech detected or recognition failed"}
+        return {"transcribed_text": transcribed}
+    except Exception as e:
+        logger.error(f"Voice live error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/speak")
+@limiter.limit("10/minute")
+async def speak_text(request: Request, text: str = Form(...)):
+    try:
+        speak(text)
+        return {"spoken": text}
+    except Exception as e:
+        logger.error(f"TTS error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

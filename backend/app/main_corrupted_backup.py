@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Request, Depends, File, UploadFile, Form, WebSocket, WebSocketDisconnect
+from auth import get_password_hash, verify_password, create_access_token, create_refresh_token, get_user_by_username, get_user_by_email, get_current_user, store_refresh_token, revoke_refresh_token, is_refresh_token_valid
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_community.llms import Ollama
@@ -12,6 +13,7 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 from starlette.responses import Response
 import time
 import logging
+import jwt
 import base64
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -114,10 +116,15 @@ def ask_hybrid(request: Request, query: QueryRequest, session_id: str = None, us
     history = get_conversation_history(sid)
     context_str = ""
     for turn in history[-5:]:
-        context_str += f"User: {turn['user']}\nAssistant: {turn['assistant']}\n"
+        context_str += f"User: {turn['user']}
+Assistant: {turn['assistant']}
+"
     full_question = query.question
     if context_str:
-        full_question = f"Previous conversation:\n{context_str}\nUser: {query.question}\nAssistant:"
+        full_question = f"Previous conversation:
+{context_str}
+User: {query.question}
+Assistant:"
     try:
         docs = vectorstore.similarity_search(query.question, k=3)
         question_lower = query.question.lower()
@@ -137,14 +144,22 @@ def ask_hybrid(request: Request, query: QueryRequest, session_id: str = None, us
         else:
             web_results = web_search(query.question, max_results=3)
             if web_results:
-                context = "\n".join([f"- {r['title']}: {r['body']} (Source: {r['href']})" for r in web_results])
-                prompt = f"Previous conversation:\n{context_str}\nUser question: {query.question}\nWeb results:\n{context}\nAnswer:"
+                context = "
+".join([f"- {r['title']}: {r['body']} (Source: {r['href']})" for r in web_results])
+                prompt = f"Previous conversation:
+{context_str}
+User question: {query.question}
+Web results:
+{context}
+Answer:"
                 answer = llm.invoke(prompt)
                 sources = [r['href'] for r in web_results]
                 add_to_history(sid, query.question, answer)
                 return {"question": query.question, "answer": answer, "route": "web", "sources": sources, "session_id": sid}
             else:
-                print("\\n[DEBUG] Prompt for LLM:", full_question, "\\n"); answer = llm.invoke(full_question)
+                print("\
+[DEBUG] Prompt for LLM:", full_question, "\
+"); answer = llm.invoke(full_question)
                 add_to_history(sid, query.question, answer)
                 return {"question": query.question, "answer": answer, "route": "llm", "sources": [], "session_id": sid}
     except Exception as e:
@@ -208,11 +223,16 @@ def ask_memory_only(request: Request, query: QueryRequest, session_id: str = Non
     history = get_conversation_history(sid)
     prompt = ""
     if history:
-        prompt += "Conversation history:\n"
+        prompt += "Conversation history:
+"
         for turn in history[-5:]:
-            prompt += f"User: {turn['user']}\nAssistant: {turn['assistant']}\n"
-        prompt += "\n"
-    prompt += f"User: {query.question}\nAssistant:"
+            prompt += f"User: {turn['user']}
+Assistant: {turn['assistant']}
+"
+        prompt += "
+"
+    prompt += f"User: {query.question}
+Assistant:"
     answer = llm.invoke(prompt)
     add_to_history(sid, query.question, answer)
     return {"question": query.question, "answer": answer, "session_id": sid}
@@ -223,11 +243,16 @@ def ask_memory_only(request: Request, query: QueryRequest, session_id: str = Non
     history = get_conversation_history(sid)
     prompt = ""
     if history:
-        prompt += "Conversation history:\n"
+        prompt += "Conversation history:
+"
         for turn in history[-5:]:
-            prompt += f"User: {turn['user']}\nAssistant: {turn['assistant']}\n"
-        prompt += "\n"
-    prompt += f"User: {query.question}\nAssistant:"
+            prompt += f"User: {turn['user']}
+Assistant: {turn['assistant']}
+"
+        prompt += "
+"
+    prompt += f"User: {query.question}
+Assistant:"
     answer = llm.invoke(prompt)
     add_to_history(sid, query.question, answer)
     return {"question": query.question, "answer": answer, "session_id": sid}
@@ -247,7 +272,7 @@ async def action_endpoint(request: Request, action_req: ActionRequest):
     except Exception as e:
         logger.error(f"Action agent error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- Streaming Endpoint (Server-Sent Events) ----------
+# ---------- Streaming Endpoint (Server‑Sent Events) ----------
 from fastapi.responses import StreamingResponse
 import httpx
 async def stream_llm(question: str):
@@ -261,10 +286,16 @@ async def stream_llm(question: str):
                 async for line in response.aiter_lines():
                     if line:
                         # Each line is a JSON object from Ollama
-                        yield f"data: {line}\n\n"
-        yield "data: [DONE]\n\n"
+                        yield f"data: {line}
+
+"
+        yield "data: [DONE]
+
+"
     except Exception as e:
-        yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
+        yield f"data: {{\"error\": \"{str(e)}\"}}
+
+"
 @app.post("/ask_stream")
 @limiter.limit("10/minute")
 async def ask_stream(request: Request, query: QueryRequest):
@@ -296,7 +327,8 @@ async def hierarchical_swarm_endpoint(request: Request, req: HierarchicalRequest
         logger.error(f"Hierarchical swarm error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 # ---------- Omni-Modal Endpoint (Text + Image + Voice) ----------
-from fastapi import File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Request, Depends, File, UploadFile, Form, WebSocket, WebSocketDisconnect
+from auth import get_password_hash, verify_password, create_access_token, create_refresh_token, get_user_by_username, get_user_by_email, get_current_user, store_refresh_token, revoke_refresh_token, is_refresh_token_valid
 from omni import omni_process
 class OmniRequest(BaseModel):
     text: str
@@ -370,13 +402,13 @@ def ask_feedback(request: Request, req: AskFeedbackRequest):
 from apscheduler.schedulers.background import BackgroundScheduler
 from self_improve import self_improve_task
 import atexit
-# Start background scheduler for self-improvement (runs every hour)
+# Start background scheduler for self‑improvement (runs every hour)
 scheduler = BackgroundScheduler()
 scheduler.add_job(self_improve_task, 'interval', hours=1, id='self_improve_job')
 scheduler.start()
 # Shutdown scheduler on exit
 atexit.register(lambda: scheduler.shutdown())
-# Enhanced /ask with self-improvement prompts
+# Enhanced /ask with self‑improvement prompts
 def load_prompt_overrides():
     if PROMPT_OVERRIDE_FILE.exists():
         with open(PROMPT_OVERRIDE_FILE, "r") as f:
@@ -389,7 +421,9 @@ def ask_advanced(request: Request, query: QueryRequest):
         docs = vectorstore.similarity_search(query.question, k=3)
         overrides = load_prompt_overrides()
         if overrides:
-            extra_instruction = f"\nAdditional guidelines from previous improvements: {overrides}\n"
+            extra_instruction = f"
+Additional guidelines from previous improvements: {overrides}
+"
         else:
             extra_instruction = ""
         if docs:
@@ -484,8 +518,9 @@ async def execute_code_endpoint(request: Request, req: CodeRequest):
     except Exception as e:
         logger.error(f"Code execution error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- Real-time Collaboration (WebSockets) ----------
-from fastapi import WebSocket, WebSocketDisconnect
+# ---------- Real‑time Collaboration (WebSockets) ----------
+from fastapi import FastAPI, HTTPException, Request, Depends, File, UploadFile, Form, WebSocket, WebSocketDisconnect
+from auth import get_password_hash, verify_password, create_access_token, create_refresh_token, get_user_by_username, get_user_by_email, get_current_user, store_refresh_token, revoke_refresh_token, is_refresh_token_valid
 import asyncio
 class ConnectionManager:
     def __init__(self):
@@ -573,10 +608,10 @@ async def debate_endpoint(request: Request, req: DebateRequest):
     except Exception as e:
         logger.error(f"Debate error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-# ---------- RLHF Fine-tuned Endpoint ----------
+# ---------- RLHF Fine‑tuned Endpoint ----------
 import sys
 sys.path.append("D:/HUNDREDXMIND/HundredXMindd")
-# Load the fine-tuned model once at startup
+# Load the fine‑tuned model once at startup
 try:
     base_model = "unsloth/llama-3.2-1b-Instruct-bnb-4bit"
     adapter_path = "D:/HUNDREDXMIND/HundredXMindd/dpo_adapter"
@@ -591,12 +626,13 @@ except Exception as e:
 async def ask_rlhf(request: Request, query: QueryRequest):
     if ft_model is None:
         raise HTTPException(503, "RLHF model not ready. Please check adapter path.")
-    inputs = tokenizer(f"User: {query.question}\nAssistant:", return_tensors="pt")
+    inputs = tokenizer(f"User: {query.question}
+Assistant:", return_tensors="pt")
     outputs = ft_model.generate(**inputs, max_new_tokens=256)
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
     answer = answer.split("Assistant:")[-1].strip()
     return {"question": query.question, "answer": answer, "route": "rlhf"}
-# ---------- RLHF Fine-tuned Endpoint ----------
+# ---------- RLHF Fine‑tuned Endpoint ----------
 import sys
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -616,12 +652,13 @@ except Exception as e:
 async def ask_rlhf(request: Request, query: QueryRequest):
     if ft_model is None:
         raise HTTPException(503, "RLHF model not ready. Please check adapter path.")
-    inputs = tokenizer(f"User: {query.question}\nAssistant:", return_tensors="pt")
+    inputs = tokenizer(f"User: {query.question}
+Assistant:", return_tensors="pt")
     outputs = ft_model.generate(**inputs, max_new_tokens=256)
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
     answer = answer.split("Assistant:")[-1].strip()
     return {"question": query.question, "answer": answer, "route": "rlhf"}
-# ---------- RLHF Fine-tuned Endpoint ----------
+# ---------- RLHF Fine‑tuned Endpoint ----------
 import sys
 sys.path.append("D:/HUNDREDXMIND/HundredXMindd")
 try:
@@ -639,19 +676,22 @@ except Exception as e:
 async def ask_rlhf(request: Request, query: QueryRequest):
     if ft_model is None:
         raise HTTPException(503, "RLHF model not ready. Please check adapter path.")
-    inputs = tokenizer(f"User: {query.question}\nAssistant:", return_tensors="pt")
+    inputs = tokenizer(f"User: {query.question}
+Assistant:", return_tensors="pt")
     outputs = ft_model.generate(**inputs, max_new_tokens=256)
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
     answer = answer.split("Assistant:")[-1].strip()
     return {"question": query.question, "answer": answer, "route": "rlhf"}
-
-# ==================== AUTHENTICATION ENDPOINTS (NO INDENT ERRORS) ====================
-from auth import *
+# ---------- Authentication Endpoints ----------
+from pydantic import BaseModel, EmailStr
+from auth          import verify_password, get_password_hash, create_access_token, create_refresh_token
+get_password_hash, verify_password, create_access_token, create_refresh_token,
+    store_refresh_token, revoke_refresh_token, is_refresh_token_valid
+)
 from database import SessionLocal, User
-from pydantic import BaseModel
-import jwt
+from fastapi.security import OAuth2PasswordRequestForm
 class RegisterRequest(BaseModel):
-    email: str
+    email: EmailStr
     username: str
     password: str
 class LoginRequest(BaseModel):
@@ -661,14 +701,184 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 class LogoutRequest(BaseModel):
     refresh_token: str
+@limiter.limit("20/minute")
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    db = SessionLocal()
+    # Check if user exists
+    if get_user_by_username(db, req.username):
+        raise HTTPException(400, "Username already registered")
+    if get_user_by_email(db, req.email):
+        raise HTTPException(400, "Email already registered")
+    hashed = get_password_hash(req.password)
+    user = User(
+        email=req.email,
+        username=req.username,
+        hashed_password=hashed
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    return {"message": "User created successfully", "user_id": user.id}
+@limiter.limit("10/minute")
+def login(req: LoginRequest, request: Request):
+    db = SessionLocal()
+    user = get_user_by_username(db, req.username)
+    if not user or not verify_password(req.password, user.hashed_password):
+        raise HTTPException(401, "Invalid username or password")
+    access_token = create_access_token(data={"sub": user.id})
+    refresh_token = create_refresh_token(data={"sub": user.id})
+    store_refresh_token(db, user.id, refresh_token)
+    db.close()
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": 30 * 60  # 30 minutes
+    }
+@limiter.limit("10/minute")
+def refresh(req: RefreshRequest, request: Request):
+    db = SessionLocal()
+    if not is_refresh_token_valid(db, req.refresh_token):
+        raise HTTPException(401, "Invalid or expired refresh token")
+    try:
+        payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(401, "Invalid refresh token")
+    except JWTError:
+        raise HTTPException(401, "Invalid refresh token")
+    new_access = create_access_token(data={"sub": user_id})
+    db.close()
+    return {"access_token": new_access, "token_type": "bearer"}
+@limiter.limit("10/minute")
+def logout(req: LogoutRequest, request: Request):
+    db = SessionLocal()
+    revoke_refresh_token(db, req.refresh_token)
+    db.close()
+    return {"message": "Logged out successfully"}
+@limiter.limit("20/minute")
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "is_active": current_user.is_active,
+        "created_at": current_user.created_at.isoformat() if current_user.created_at else None
+    }
+# ---------- Authentication Endpoints ----------
+from pydantic import BaseModel, EmailStr
+from auth import verify_password, get_password_hash, create_access_token, create_refresh_token
+get_password_hash, verify_password, create_access_token, create_refresh_token,
+    store_refresh_token, revoke_refresh_token, is_refresh_token_valid
+)
+from database import SessionLocal, User
+from fastapi.security import OAuth2PasswordRequestForm
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    username: str
+    password: str
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+class RefreshRequest(BaseModel):
+    refresh_token: str
+class LogoutRequest(BaseModel):
+    refresh_token: str
+@limiter.limit("5/minute")
+def register(req: RegisterRequest, request: Request):
+    db = SessionLocal()
+    if get_user_by_username(db, req.username):
+        raise HTTPException(400, "Username already registered")
+    if get_user_by_email(db, req.email):
+        raise HTTPException(400, "Email already registered")
+    hashed = get_password_hash(req.password)
+    user = User(email=req.email, username=req.username, hashed_password=hashed)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    return {"message": "User created successfully", "user_id": user.id}
+@limiter.limit("10/minute")
+def login(req: LoginRequest, request: Request):
+    db = SessionLocal()
+    user = get_user_by_username(db, req.username)
+    if not user or not verify_password(req.password, user.hashed_password):
+        raise HTTPException(401, "Invalid username or password")
+    access_token = create_access_token(data={"sub": user.id})
+    refresh_token = create_refresh_token(data={"sub": user.id})
+    store_refresh_token(db, user.id, refresh_token)
+    db.close()
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer", "expires_in": 30*60}
+@limiter.limit("10/minute")
+def refresh(req: RefreshRequest, request: Request):
+    db = SessionLocal()
+    if not is_refresh_token_valid(db, req.refresh_token):
+        raise HTTPException(401, "Invalid or expired refresh token")
+    try:
+        payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(401, "Invalid refresh token")
+    except JWTError:
+        raise HTTPException(401, "Invalid refresh token")
+    new_access = create_access_token(data={"sub": user_id})
+    db.close()
+    return {"access_token": new_access, "token_type": "bearer"}
+@limiter.limit("10/minute")
+def logout(req: LogoutRequest, request: Request):
+    db = SessionLocal()
+    revoke_refresh_token(db, req.refresh_token)
+    db.close()
+    return {"message": "Logged out successfully"}
+@limiter.limit("20/minute")
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "is_active": current_user.is_active,
+        "created_at": current_user.created_at.isoformat() if current_user.created_at else None
+    }
+# ---------- REGISTER ENDPOINT (final) ----------
+from auth import verify_password, get_password_hash, create_access_token, create_refresh_token
+class RegisterRequest(BaseModel):
+    email: str
+    username: str
+    password: str
+@limiter.limit("5/minute")
+def register(req: RegisterRequest, request: Request):
+    db = SessionLocal()
+    if db.query(User).filter(User.username == req.username).first():
+        raise HTTPException(400, "Username already exists")
+    if db.query(User).filter(User.email == req.email).first():
+        raise HTTPException(400, "Email already exists")
+    hashed = get_password_hash(req.password)
+    user = User(email=req.email, username=req.username, hashed_password=hashed)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    return {"message": "User created", "user_id": user.id}
+# ---------- AUTHENTICATION ENDPOINTS (WORKING) ----------
+from auth import get_password_hash, verify_password, create_access_token, create_refresh_token, get_user_by_username, get_user_by_email, get_current_user, store_refresh_token, revoke_refresh_token, is_refresh_token_valid
+from database import SessionLocal, User
+from pydantic import BaseModel
+class RegisterRequest(BaseModel):
+    email: str
+    username: str
+    password: str
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 @app.post("/auth/register", status_code=201)
 @limiter.limit("5/minute")
 def register(req: RegisterRequest, request: Request):
     db = SessionLocal()
     if db.query(User).filter(User.username == req.username).first():
-        raise HTTPException(400, "Username exists")
+        raise HTTPException(400, "Username already exists")
     if db.query(User).filter(User.email == req.email).first():
-        raise HTTPException(400, "Email exists")
+        raise HTTPException(400, "Email already exists")
     hashed = get_password_hash(req.password)
     user = User(email=req.email, username=req.username, hashed_password=hashed)
     db.add(user)
@@ -682,189 +892,13 @@ def login(req: LoginRequest, request: Request):
     db = SessionLocal()
     user = get_user_by_username(db, req.username)
     if not user or not verify_password(req.password, user.hashed_password):
-        raise HTTPException(401, "Invalid credentials")
-    if not user.is_active:
-        raise HTTPException(401, "Account disabled")
+        raise HTTPException(401, "Invalid username or password")
     access = create_access_token(data={"sub": user.id})
     refresh = create_refresh_token(data={"sub": user.id})
     store_refresh_token(db, user.id, refresh)
     db.close()
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
-@app.post("/auth/refresh")
-@limiter.limit("10/minute")
-def refresh(req: RefreshRequest, request: Request):
-    db = SessionLocal()
-    if not is_refresh_token_valid(db, req.refresh_token):
-        raise HTTPException(401, "Invalid refresh token")
-    try:
-        payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(401, "Invalid token")
-    except JWTError:
-        raise HTTPException(401, "Invalid token")
-    new_access = create_access_token(data={"sub": user_id})
-    db.close()
-    return {"access_token": new_access, "token_type": "bearer"}
-@app.post("/auth/logout")
-@limiter.limit("10/minute")
-def logout(req: LogoutRequest, request: Request):
-    db = SessionLocal()
-    revoke_refresh_token(db, req.refresh_token)
-    db.close()
-    return {"message": "Logged out"}
 @app.get("/auth/me")
 @limiter.limit("20/minute")
 def get_me(request: Request, current_user: User = Depends(get_current_user)):
     return {"id": current_user.id, "username": current_user.username, "email": current_user.email}
-
-# Redis caching imports
-from redis_cache import get_cached_response, cache_response
-# ---------- Cached version (Redis) ----------
-@app.post("/ask_cached")
-@limiter.limit("20/minute")
-def ask_cached(request: Request, query: QueryRequest):
-    cached = get_cached_response(query.question)
-    if cached:
-        return {"question": query.question, "answer": cached, "route": "cache"}
-    docs = vectorstore.similarity_search(query.question, k=3)
-    if docs:
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
-        result = qa.invoke({"query": query.question})
-        answer = result["result"]
-        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
-        route = "docs"
-    else:
-        answer = llm.invoke(query.question)
-        sources = []
-        route = "llm"
-    cache_response(query.question, answer)
-    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
-
-# Redis caching imports
-from redis_cache import get_cached_response, cache_response
-# ---------- Cached version (Redis) ----------
-@app.post("/ask_cached")
-@limiter.limit("20/minute")
-def ask_cached(request: Request, query: QueryRequest):
-    cached = get_cached_response(query.question)
-    if cached:
-        return {"question": query.question, "answer": cached, "route": "cache"}
-    docs = vectorstore.similarity_search(query.question, k=3)
-    if docs:
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
-        result = qa.invoke({"query": query.question})
-        answer = result["result"]
-        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
-        route = "docs"
-    else:
-        answer = llm.invoke(query.question)
-        sources = []
-        route = "llm"
-    cache_response(query.question, answer)
-    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
-
-# Redis caching imports
-from redis_cache import get_cached_response, cache_response
-# ---------- Cached version (Redis) ----------
-@app.post("/ask_cached")
-@limiter.limit("20/minute")
-def ask_cached(request: Request, query: QueryRequest):
-    cached = get_cached_response(query.question)
-    if cached:
-        return {"question": query.question, "answer": cached, "route": "cache"}
-    docs = vectorstore.similarity_search(query.question, k=3)
-    if docs:
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever(search_kwargs={"k": 3}), return_source_documents=True)
-        result = qa.invoke({"query": query.question})
-        answer = result["result"]
-        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
-        route = "docs"
-    else:
-        answer = llm.invoke(query.question)
-        sources = []
-        route = "llm"
-    cache_response(query.question, answer)
-    return {"question": query.question, "answer": answer, "route": route, "sources": list(set(sources))}
-import sys
-class SimpleRequest(BaseModel):
-    msg: str
-@app.post("/simple_cache")
-@limiter.limit("20/minute")
-def simple_cache(req: SimpleRequest, request: Request):
-    cached = get_cached_response(req.msg)
-    if cached:
-        return {"source": "cache", "response": cached}
-    fake_response = f"Echo: {req.msg}"
-    cache_response(req.msg, fake_response)
-    return {"source": "llm (now cached)", "response": fake_response}
-# ---------- SIMPLE CACHED TEST ENDPOINT (using diskcache) ----------
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from cache import get_cached_response, cache_response
-class SimpleRequest(BaseModel):
-    msg: str
-@app.post("/simple_cache")
-@limiter.limit("20/minute")
-def simple_cache(req: SimpleRequest, request: Request):
-    cached = get_cached_response(req.msg)
-    if cached:
-        return {"source": "cache", "response": cached}
-    fake_response = f"Echo: {req.msg}"
-    cache_response(req.msg, fake_response)
-    return {"source": "llm (now cached)", "response": fake_response}
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# CORS middleware (allow all origins for development)
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
