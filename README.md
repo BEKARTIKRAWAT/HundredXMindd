@@ -73,3 +73,14 @@ MIT © [BEKARTIKRAWAT](https://github.com/BEKARTIKRAWAT)
 - **Web Search** – Live answers with DuckDuckGo.
 - **Long‑term Memory** – Session‑based conversation recall.
 - **Multi‑modal** – Vision (image Q&A) + Voice (speech‑to‑text).
+
+## 🚀 Advanced Features
+
+- **Advanced RAG** – Hybrid search (vector + BM25) – `/ask_advanced`
+- **GraphRAG** – Entity extraction and relation mapping – `/graph_ingest`, `/graph_query`
+- **Voice** – Speech‑to‑text (file upload) – `/voice` | Text‑to‑speech – `/speak`
+- **Multi‑model routing** – `/ask_routed`
+- **Agent swarm** – `/advanced_swarm`
+- **Tool calling** – calculator, file reader, web search – `/call_tool`
+- **JWT authentication** – register, login, refresh, logout
+- **React frontend** – chat interface, login, settings
